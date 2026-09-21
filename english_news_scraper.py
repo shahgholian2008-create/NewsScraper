@@ -10,20 +10,36 @@ import requests
 with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
-# آدرس Render Proxy
+# آدرس Render Proxy (Groq)
 RENDER_PROXY_URL = "https://ktmir-newsbot.onrender.com/groq"
 
+# ========== RSS FEEDS ==========
 RSS_FEEDS = {
     "BBC World": "https://feeds.bbci.co.uk/news/world/rss.xml",
     "BBC Middle East": "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml",
     "Al Jazeera": "https://www.aljazeera.com/xml/rss/all.xml",
+    "DW English": "https://rss.dw.com/rdf/rss-en-all",
+    "France24": "https://www.france24.com/en/rss",
+    "NYT World": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
 }
 
+# ========== دسته‌بندی منابع ==========
+SOURCE_CATEGORIES = {
+    "BBC World": "عمومی",
+    "BBC Middle East": "خاورمیانه",
+    "Al Jazeera": "خاورمیانه",
+    "DW English": "جهانی",
+    "France24": "جهانی",
+    "NYT World": "جهانی",
+}
+
+# ========== کلمات کلیدی ایران ==========
 IRAN_KEYWORDS = [
     "Iran", "Iranian", "Tehran", "Khamenei", "IRGC",
     "Persian", "Ayatollah", "Hormuz", "Strait of Hormuz"
 ]
 
+# ========== کلمات کلیدی آمریکا ==========
 US_KEYWORDS = [
     "US", "USA", "United States", "America", "American",
     "Trump", "White House", "Washington",
@@ -32,6 +48,7 @@ US_KEYWORDS = [
 
 
 def contains_word(text, word):
+    """چک کن کلمه‌ی دقیق توی متن هست (نه بخشی از کلمه‌ی دیگه)"""
     if not text:
         return False
     pattern = r'\b' + re.escape(word) + r'\b'
@@ -39,6 +56,7 @@ def contains_word(text, word):
 
 
 def is_iran_us_conflict(text):
+    """آیا خبر مربوط به درگیری ایران و آمریکاست؟"""
     if not text:
         return False
     has_iran = any(contains_word(text, kw) for kw in IRAN_KEYWORDS)
@@ -46,41 +64,55 @@ def is_iran_us_conflict(text):
     return has_iran and has_us
 
 
-def translate_to_persian(text):
+def translate_to_persian(text, max_retries=3):
     """ترجمه با Groq از طریق Render Proxy"""
     if not text or len(text.strip()) < 5:
         return ""
     
-    try:
-        response = requests.post(
-            RENDER_PROXY_URL,
-            json={
-                "model": "openai/gpt-oss-120b",
-                "prompt": f"""Translate the following English news text to Persian (Farsi).
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                RENDER_PROXY_URL,
+                json={
+                    "model": "openai/gpt-oss-120b",
+                    "prompt": f"""Translate the following English news text to Persian (Farsi).
 Keep it natural and journalistic. Do NOT add any explanation, just the translation.
 
 Text:
 {text[:2000]}"""
-            },
-            timeout=90
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            try:
-                return result["choices"][0]["message"]["content"].strip()
-            except (KeyError, IndexError):
-                print(f"   ⚠️ ساختار پاسخ: {result}")
-                return ""
-        else:
-            print(f"   ❌ Error {response.status_code}: {response.text[:200]}")
-            return ""
+                },
+                timeout=90
+            )
             
-    except Exception as e:
-        print(f"   ❌ خطا: {e}")
-        return ""
+            if response.status_code == 200:
+                result = response.json()
+                try:
+                    return result["choices"][0]["message"]["content"].strip()
+                except (KeyError, IndexError):
+                    print(f"   ⚠️ ساختار پاسخ عجیبه")
+                    return ""
+            
+            elif response.status_code in [429, 500, 502, 503, 504]:
+                wait_time = (attempt + 1) * 5
+                print(f"   ⏳ خطای {response.status_code}، {wait_time} ثانیه صبر...")
+                time.sleep(wait_time)
+                continue
+            
+            else:
+                print(f"   ❌ Error {response.status_code}")
+                return ""
+                
+        except Exception as e:
+            print(f"   ❌ خطا: {e}")
+            time.sleep(5)
+            continue
+    
+    print(f"   ❌ بعد از {max_retries} تلاش، ناموفق")
+    return ""
+
 
 def scrape_rss(source_name, rss_url):
+    """استخراج اخبار از یه RSS"""
     print(f"\n🌐 در حال دریافت از {source_name}...")
     
     try:
@@ -92,7 +124,7 @@ def scrape_rss(source_name, rss_url):
         
         news_list = []
         
-        for entry in feed.entries[:30]:
+        for entry in feed.entries[:15]:  # ← ۱۵ خبر از هر منبع
             title = entry.get("title", "").strip()
             url = entry.get("link", "").strip()
             published = entry.get("published", "")
@@ -101,6 +133,7 @@ def scrape_rss(source_name, rss_url):
             if title and url:
                 news_list.append({
                     "source": source_name,
+                    "category": SOURCE_CATEGORIES.get(source_name, "عمومی"),  # ← جدید
                     "title_en": title,
                     "url": url,
                     "date": published if published else datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -143,6 +176,17 @@ filtered_news = [
 
 print(f"✅ {len(filtered_news)} خبر مرتبط پیدا شد\n")
 
+# نمایش دسته‌بندی‌ها
+if filtered_news:
+    print("📂 دسته‌بندی اخبار:")
+    categories = {}
+    for n in filtered_news:
+        cat = n.get("category", "نامشخص")
+        categories[cat] = categories.get(cat, 0) + 1
+    for cat, count in categories.items():
+        print(f"   • {cat}: {count} خبر")
+    print()
+
 # ترجمه همه‌ی خبرا
 news_to_translate = filtered_news
 
@@ -155,12 +199,12 @@ for i, news in enumerate(news_to_translate, 1):
     
     print("   🔄 ترجمه عنوان...")
     news["title_fa"] = translate_to_persian(news["title_en"])
-    time.sleep(10)
+    time.sleep(1)
     
     if news["content_en"]:
         print("   🔄 ترجمه متن...")
         news["content_fa"] = translate_to_persian(news["content_en"][:1000])
-        time.sleep(10)
+        time.sleep(1)
     
     print(f"   ✅ ترجمه شد: {news['title_fa'][:60]}...")
 
@@ -174,8 +218,8 @@ if filtered_news:
     print("\n" + "=" * 60)
     print("📰 نمونه‌ی ترجمه:")
     print("=" * 60)
-    for i, news in enumerate(news_to_translate, 1):
-        print(f"\n{i}. 🇬🇧 {news['title_en']}")
+    for i, news in enumerate(news_to_translate[:5], 1):
+        print(f"\n{i}. [{news.get('category', '?')}] 🇬🇧 {news['title_en']}")
         print(f"   🇮🇷 {news['title_fa']}")
 else:
     print("\n⚠️ هیچ خبر مرتبطی پیدا نشد.")
