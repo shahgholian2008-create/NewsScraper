@@ -3,12 +3,16 @@ import json
 import logging
 from datetime import datetime
 
+from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.types import Update
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import pandas as pd
+import uvicorn
+import os
 
 # بارگذاری تنظیمات
 with open("config.json", "r", encoding="utf-8") as f:
@@ -16,15 +20,27 @@ with open("config.json", "r", encoding="utf-8") as f:
 
 TOKEN = config["telegram_token"]
 CHANNEL_ID = int(config["channel_id"])
+MY_USER_ID = int(config["my_user_id"])
 
 logging.basicConfig(level=logging.INFO)
 
-# پروکسی سایفون
-PROXY_URL = "http://127.0.0.1:8080"
-session = AiohttpSession(proxy=PROXY_URL)
+# پروکسی سایفون (فقط برای لوکال)
+# روی Render، پروکسی لازم نیست
+PROXY_URL = os.environ.get("PROXY_URL", "http://127.0.0.1:8080")
 
-bot = Bot(token=TOKEN, session=session)
+if PROXY_URL:
+    session = AiohttpSession(proxy=PROXY_URL)
+else:
+    session = None
+
+bot = Bot(token=TOKEN, session=session) if session else Bot(token=TOKEN)
 dp = Dispatcher()
+
+# Webhook URL (روی Render)
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+WEBHOOK_PATH = "/webhook"
+
+app = FastAPI()
 
 
 def load_news(file_path="iran_us_news_translated.xlsx"):
@@ -44,7 +60,6 @@ def format_news(news_row, index):
     url = news_row.get("url", "")
     source = news_row.get("source", "نامشخص")
     
-    # اگه ترجمه فارسی خالی بود، از انگلیسی استفاده کن
     display_title = title_fa if title_fa and str(title_fa).strip() else title_en
     
     keyboard = types.InlineKeyboardMarkup(
@@ -72,7 +87,6 @@ async def send_daily_news():
     
     top_news = df.head(5)
     
-    # پیام شروع
     await bot.send_message(
         CHANNEL_ID,
         f"🌅 *صبح بخیر!*\n\n"
@@ -82,7 +96,6 @@ async def send_daily_news():
     )
     await asyncio.sleep(2)
     
-    # ارسال هر خبر
     for i, (_, row) in enumerate(top_news.iterrows(), 1):
         message, keyboard = format_news(row, i)
         try:
@@ -98,6 +111,8 @@ async def send_daily_news():
         except Exception as e:
             print(f"   ❌ خطا در ارسال خبر {i}: {e}")
 
+
+# ========== دستورات ==========
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
@@ -126,6 +141,9 @@ async def help_command(message: types.Message):
 
 @dp.message(Command("news"))
 async def news_command(message: types.Message):
+    if message.from_user.id != MY_USER_ID:
+        await message.answer("❌ شما اجازه‌ی این کار رو ندارید.")
+        return
     await message.answer("⏳ در حال آماده‌سازی...")
     
     df = load_news()
@@ -151,6 +169,10 @@ async def news_command(message: types.Message):
 
 @dp.message(Command("send"))
 async def send_command(message: types.Message):
+    if message.from_user.id != MY_USER_ID:
+        await message.answer("❌ شما اجازه‌ی این کار رو ندارید.")
+        return
+    
     await message.answer("📢 در حال ارسال به کانال...")
     await send_daily_news()
     await message.answer("✅ ارسال شد!")
@@ -161,19 +183,43 @@ async def unknown_message(message: types.Message):
     await message.answer("❌ دستور نامشخص. از /help استفاده کن.")
 
 
-async def main():
-    print("🤖 News Channel Bot is running...")
+# ========== Webhook ==========
+
+@app.post(WEBHOOK_PATH)
+async def webhook_handler(request: Request):
+    """دریافت پیام‌های تلگرام از طریق Webhook"""
+    try:
+        update_data = await request.json()
+        update = Update.model_validate(update_data, context={"bot": bot})
+        await dp.feed_update(bot, update)
+    except Exception as e:
+        print(f"❌ خطا در پردازش Webhook: {e}")
+    return {"ok": True}
+
+
+@app.get("/")
+async def health():
+    return {"status": "running", "message": "News Channel Bot is running!"}
+
+
+# ========== شروع ==========
+
+@app.on_event("startup")
+async def startup():
+    """وقتی سرویس بالا میاد"""
+    # ست کردن Webhook
+    if WEBHOOK_URL:
+        full_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+        await bot.set_webhook(full_url)
+        print(f"✅ Webhook ست شد: {full_url}")
     
-    # زمان‌بندی: هر روز ساعت ۸ صبح
+    # زمان‌بندی
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_daily_news, "cron", hour=8, minute=0)
     scheduler.start()
-    
     print("⏰ زمان‌بندی: هر روز ساعت ۸:۰۰")
-    print(f"📢 کانال: {CHANNEL_ID}")
-    
-    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
