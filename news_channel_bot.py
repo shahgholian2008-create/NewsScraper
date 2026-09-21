@@ -15,12 +15,19 @@ import uvicorn
 import os
 
 # بارگذاری تنظیمات
-with open("config.json", "r", encoding="utf-8") as f:
-    config = json.load(f)
+if os.path.exists("config.json"):
+    with open("config.json", "r", encoding="utf-8") as f:
+        config = json.load(f)
+    TOKEN = config["telegram_token"]
+    CHANNEL_ID = int(config["channel_id"])
+    MY_USER_ID = int(config["my_user_id"])
+else:
+    TOKEN = os.environ.get("TELEGRAM_TOKEN")
+    CHANNEL_ID = int(os.environ.get("CHANNEL_ID", 0))
+    MY_USER_ID = int(os.environ.get("MY_USER_ID", 0))
 
-TOKEN = config["telegram_token"]
-CHANNEL_ID = int(config["channel_id"])
-MY_USER_ID = int(config["my_user_id"])
+if not TOKEN:
+    raise ValueError("❌ TELEGRAM_TOKEN not found!")
 
 logging.basicConfig(level=logging.INFO)
 
