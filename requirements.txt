@@ -2,3 +2,7 @@ feedparser
 pandas
 openpyxl
 requests
+fastapi
+uvicorn
+aiogram
+apscheduler
