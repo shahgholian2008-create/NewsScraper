@@ -32,15 +32,19 @@ if not TOKEN:
 logging.basicConfig(level=logging.INFO)
 
 # پروکسی سایفون (فقط برای لوکال)
-# روی Render، پروکسی لازم نیست
-PROXY_URL = os.environ.get("PROXY_URL", "http://127.0.0.1:8080")
+# روی Render، پروکسی لازم نیست (چون IP تمیزه)
+PROXY_URL = os.environ.get("PROXY_URL", "")
 
 if PROXY_URL:
+    # لوکال: با پروکسی سایفون
     session = AiohttpSession(proxy=PROXY_URL)
+    bot = Bot(token=TOKEN, session=session)
+    print(f"🌐 استفاده از پروکسی: {PROXY_URL}")
 else:
-    session = None
+    # Render: بدون پروکسی
+    bot = Bot(token=TOKEN)
+    print("🌐 بدون پروکسی (IP تمیز)")
 
-bot = Bot(token=TOKEN, session=session) if session else Bot(token=TOKEN)
 dp = Dispatcher()
 
 # Webhook URL (روی Render)
