@@ -8,7 +8,7 @@ config.json
 .env
 
 # Excel outputs
-*.xlsx
+#*.xlsx
 
 # IDE
 .vscode/
