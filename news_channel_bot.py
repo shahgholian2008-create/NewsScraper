@@ -5,7 +5,8 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 
 from fastapi import FastAPI, Request
 from aiogram import Bot, Dispatcher, types
@@ -150,6 +151,26 @@ def is_iran_us_conflict(text):
     return has_iran and has_us
 
 
+def is_recent(date_str, hours=48):
+    """چک کن آیا خبر توی N ساعت اخیر منتشر شده"""
+    if not date_str:
+        return False
+    
+    try:
+        try:
+            dt = parsedate_to_datetime(date_str)
+        except Exception:
+            dt = datetime.strptime(date_str[:16], "%Y-%m-%d %H:%M")
+        
+        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+        diff = now - dt
+        
+        return diff < timedelta(hours=hours)
+    except Exception as e:
+        logger.warning(f"⚠️ خطا در پارس تاریخ '{date_str}': {e}")
+        return True
+
+
 def translate_to_persian(text, max_retries=3):
     """ترجمه با Groq از طریق Render Proxy"""
     if not text or len(text.strip()) < 5:
@@ -193,7 +214,7 @@ Text:
 
 
 def scrape_rss(source_name, rss_url):
-    """استخراج اخبار از یه RSS"""
+    """استخراج اخبار از یه RSS (مرتب‌شده بر اساس تاریخ)"""
     logger.info(f"🌐 در حال دریافت از {source_name}...")
     
     try:
@@ -203,9 +224,16 @@ def scrape_rss(source_name, rss_url):
             logger.warning(f"   ⚠️ هیچ خبری پیدا نشد")
             return []
         
+        # ✅ مرتب‌سازی بر اساس تاریخ (جدیدترین اول)
+        entries = sorted(
+            feed.entries,
+            key=lambda x: x.get("published_parsed") or (0,),
+            reverse=True
+        )
+        
         news_list = []
         
-        for entry in feed.entries[:15]:
+        for entry in entries[:15]:
             title = entry.get("title", "").strip()
             url = entry.get("link", "").strip()
             published = entry.get("published", "")
@@ -236,7 +264,7 @@ async def scrape_and_translate():
     logger.info(f"🚀 شروع اسکرپ - {datetime.now()}")
     logger.info("=" * 60)
     
-    init_db()  # مطمئن شو دیتابیس هست
+    init_db()
     
     all_news = []
     for source_name, rss_url in RSS_FEEDS.items():
@@ -253,12 +281,16 @@ async def scrape_and_translate():
     ]
     logger.info(f"🔍 فیلتر (ایران-آمریکا): {len(filtered)} خبر")
     
-    # فیلتر ۲: حذف تکراری‌ها
-    new_news = [n for n in filtered if not is_url_seen(n["url"])]
+    # فیلتر ۲: فقط خبرهای ۴۸ ساعت اخیر
+    recent = [n for n in filtered if is_recent(n.get("date", ""), hours=48)]
+    logger.info(f"🕐 خبرهای ۴۸ ساعت اخیر: {len(recent)} خبر")
+    
+    # فیلتر ۳: حذف تکراری‌ها
+    new_news = [n for n in recent if not is_url_seen(n["url"])]
     logger.info(f"🆕 خبرهای جدید (نه تکراری): {len(new_news)} خبر")
     
     if not new_news:
-        logger.info("⚠️ همه‌ی خبرها تکراری هستن.")
+        logger.info("⚠️ همه‌ی خبرها تکراری یا قدیمی هستن.")
         return 0
     
     # ترجمه
@@ -272,12 +304,12 @@ async def scrape_and_translate():
             news["content_fa"] = await asyncio.to_thread(translate_to_persian, news["content_en"][:1000])
             await asyncio.sleep(1)
     
-    # ذخیره در Excel (فقط خبرهای جدید)
+    # ذخیره در Excel
     df = pd.DataFrame(new_news)
     df.to_excel(EXCEL_FILE, index=False, engine="openpyxl")
     logger.info(f"✅ {len(new_news)} خبر جدید در '{EXCEL_FILE}' ذخیره شد!")
     
-    # علامت‌گذاری URLها به عنوان دیده‌شده
+    # علامت‌گذاری
     for news in new_news:
         mark_url_seen(news["url"], news["title_en"])
     
@@ -444,7 +476,7 @@ async def update_command(message: types.Message):
     if count > 0:
         await message.answer(f"✅ {count} خبر جدید پیدا شد!")
     else:
-        await message.answer("⚠️ خبر جدیدی پیدا نشد (همه تکراری بودن).")
+        await message.answer("⚠️ خبر جدیدی پیدا نشد (همه تکراری یا قدیمی بودن).")
 
 
 @dp.message(Command("reset"))
