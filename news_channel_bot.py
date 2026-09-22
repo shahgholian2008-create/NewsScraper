@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
 from datetime import datetime
 
@@ -17,6 +18,13 @@ import pandas as pd
 import feedparser
 import requests
 import uvicorn
+
+# ========== Logging ==========
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 # ========== بارگذاری تنظیمات ==========
 if os.path.exists("config.json"):
@@ -33,22 +41,19 @@ else:
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_TOKEN not found!")
 
-logging.basicConfig(level=logging.INFO)
-
-# ========== پروکسی (فقط لوکال) ==========
+# ========== پروکسی ==========
 PROXY_URL = os.environ.get("PROXY_URL", "")
 
 if PROXY_URL:
     session = AiohttpSession(proxy=PROXY_URL)
     bot = Bot(token=TOKEN, session=session)
-    print(f"🌐 استفاده از پروکسی: {PROXY_URL}")
+    logger.info(f"🌐 استفاده از پروکسی: {PROXY_URL}")
 else:
     bot = Bot(token=TOKEN)
-    print("🌐 بدون پروکسی (IP تمیز)")
+    logger.info("🌐 بدون پروکسی (IP تمیز)")
 
 dp = Dispatcher()
 
-# Webhook URL
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 WEBHOOK_PATH = "/webhook"
 
@@ -85,9 +90,50 @@ US_KEYWORDS = [
 ]
 
 EXCEL_FILE = "iran_us_news_translated.xlsx"
+DB_FILE = "seen_news.db"
 
 
-# ========== توابع ==========
+# ========== دیتابیس ==========
+
+def init_db():
+    """ساخت دیتابیس برای URLهای دیده‌شده"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS seen_urls (
+            url TEXT PRIMARY KEY,
+            title TEXT,
+            seen_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+    logger.info("✅ دیتابیس آماده شد")
+
+
+def is_url_seen(url):
+    """چک کن آیا URL قبلاً دیده شده"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM seen_urls WHERE url = ?", (url,))
+    result = cursor.fetchone()
+    conn.close()
+    return result is not None
+
+
+def mark_url_seen(url, title):
+    """URL رو به عنوان دیده‌شده علامت بزن"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR IGNORE INTO seen_urls (url, title, seen_at) VALUES (?, ?, ?)",
+        (url, title, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+# ========== توابع کمکی ==========
 
 def contains_word(text, word):
     if not text:
@@ -109,7 +155,6 @@ def translate_to_persian(text, max_retries=3):
     if not text or len(text.strip()) < 5:
         return ""
     
-    # آدرس Groq Proxy روی Render
     groq_url = "https://ktmir-newsbot.onrender.com/groq"
     
     for attempt in range(max_retries):
@@ -135,13 +180,13 @@ Text:
                     return ""
             elif response.status_code in [429, 500, 502, 503, 504]:
                 wait_time = (attempt + 1) * 5
-                print(f"   ⏳ خطای {response.status_code}، {wait_time} ثانیه صبر...")
+                logger.warning(f"   ⏳ خطای {response.status_code}، {wait_time} ثانیه صبر...")
                 time.sleep(wait_time)
                 continue
             else:
                 return ""
         except Exception as e:
-            print(f"   ❌ خطا: {e}")
+            logger.error(f"   ❌ خطا: {e}")
             time.sleep(5)
             continue
     return ""
@@ -149,12 +194,13 @@ Text:
 
 def scrape_rss(source_name, rss_url):
     """استخراج اخبار از یه RSS"""
-    print(f"\n🌐 در حال دریافت از {source_name}...")
+    logger.info(f"🌐 در حال دریافت از {source_name}...")
     
     try:
         feed = feedparser.parse(rss_url)
         
         if not feed.entries:
+            logger.warning(f"   ⚠️ هیچ خبری پیدا نشد")
             return []
         
         news_list = []
@@ -177,41 +223,48 @@ def scrape_rss(source_name, rss_url):
                     "content_fa": ""
                 })
         
-        print(f"   ✅ {len(news_list)} خبر از {source_name}")
+        logger.info(f"   ✅ {len(news_list)} خبر از {source_name}")
         return news_list
     except Exception as e:
-        print(f"   ❌ خطا در {source_name}: {e}")
+        logger.error(f"   ❌ خطا در {source_name}: {e}")
         return []
 
 
 async def scrape_and_translate():
-    """اسکرپ + فیلتر + ترجمه + ذخیره در Excel"""
-    print("\n" + "=" * 60)
-    print(f"🚀 شروع اسکرپ - {datetime.now()}")
-    print("=" * 60)
+    """اسکرپ + فیلتر + چک تکراری + ترجمه + ذخیره در Excel"""
+    logger.info("=" * 60)
+    logger.info(f"🚀 شروع اسکرپ - {datetime.now()}")
+    logger.info("=" * 60)
+    
+    init_db()  # مطمئن شو دیتابیس هست
     
     all_news = []
     for source_name, rss_url in RSS_FEEDS.items():
         news = scrape_rss(source_name, rss_url)
         all_news.extend(news)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
     
-    print(f"\n📊 مجموع: {len(all_news)} خبر")
+    logger.info(f"📊 مجموع: {len(all_news)} خبر استخراج شد")
     
-    # فیلتر
-    filtered_news = [
+    # فیلتر ۱: ایران-آمریکا
+    filtered = [
         n for n in all_news 
         if is_iran_us_conflict(n["title_en"]) or is_iran_us_conflict(n["content_en"])
     ]
-    print(f"🔍 فیلتر: {len(filtered_news)} خبر مرتبط")
+    logger.info(f"🔍 فیلتر (ایران-آمریکا): {len(filtered)} خبر")
     
-    if not filtered_news:
-        return False
+    # فیلتر ۲: حذف تکراری‌ها
+    new_news = [n for n in filtered if not is_url_seen(n["url"])]
+    logger.info(f"🆕 خبرهای جدید (نه تکراری): {len(new_news)} خبر")
+    
+    if not new_news:
+        logger.info("⚠️ همه‌ی خبرها تکراری هستن.")
+        return 0
     
     # ترجمه
-    print(f"\n🌐 شروع ترجمه ({len(filtered_news)} خبر)...")
-    for i, news in enumerate(filtered_news, 1):
-        print(f"\n[{i}/{len(filtered_news)}] {news['title_en'][:60]}...")
+    logger.info(f"🌐 شروع ترجمه ({len(new_news)} خبر جدید)...")
+    for i, news in enumerate(new_news, 1):
+        logger.info(f"[{i}/{len(new_news)}] {news['title_en'][:60]}...")
         news["title_fa"] = await asyncio.to_thread(translate_to_persian, news["title_en"])
         await asyncio.sleep(1)
         
@@ -219,12 +272,17 @@ async def scrape_and_translate():
             news["content_fa"] = await asyncio.to_thread(translate_to_persian, news["content_en"][:1000])
             await asyncio.sleep(1)
     
-    # ذخیره در Excel
-    df = pd.DataFrame(filtered_news)
+    # ذخیره در Excel (فقط خبرهای جدید)
+    df = pd.DataFrame(new_news)
     df.to_excel(EXCEL_FILE, index=False, engine="openpyxl")
-    print(f"\n✅ {len(filtered_news)} خبر در '{EXCEL_FILE}' ذخیره شد!")
+    logger.info(f"✅ {len(new_news)} خبر جدید در '{EXCEL_FILE}' ذخیره شد!")
     
-    return True
+    # علامت‌گذاری URLها به عنوان دیده‌شده
+    for news in new_news:
+        mark_url_seen(news["url"], news["title_en"])
+    
+    logger.info(f"✅ {len(new_news)} URL به دیتابیس اضافه شد")
+    return len(new_news)
 
 
 def load_news():
@@ -233,7 +291,7 @@ def load_news():
         df = pd.read_excel(EXCEL_FILE, engine="openpyxl")
         return df
     except Exception as e:
-        print(f"❌ خطا در خوندن Excel: {e}")
+        logger.error(f"❌ خطا در خوندن Excel: {e}")
         return None
 
 
@@ -284,28 +342,26 @@ async def send_news_to_channel():
                 reply_markup=keyboard,
                 disable_web_page_preview=True
             )
-            print(f"   ✅ خبر {i} ارسال شد")
+            logger.info(f"   ✅ خبر {i} ارسال شد")
             await asyncio.sleep(2)
         except Exception as e:
-            print(f"   ❌ خطا: {e}")
+            logger.error(f"   ❌ خطا: {e}")
 
 
 async def daily_job():
     """کار روزانه: اسکرپ + ترجمه + ارسال"""
-    print(f"\n⏰ اجرای کار روزانه - {datetime.now()}")
+    logger.info(f"⏰ اجرای کار روزانه - {datetime.now()}")
     
-    # ۱. اسکرپ + ترجمه
-    success = await scrape_and_translate()
+    count = await scrape_and_translate()
     
-    if not success:
-        await bot.send_message(CHANNEL_ID, "❌ هیچ خبری پیدا نشد.")
+    if count == 0:
+        logger.info("⚠️ خبر جدیدی نیست، ارسال انجام نمی‌شه.")
         return
     
-    # ۲. ارسال به کانال
     await send_news_to_channel()
 
 
-# ========== دستورات ربات ==========
+# ========== دستورات ==========
 
 @dp.message(Command("start"))
 async def start_command(message: types.Message):
@@ -314,7 +370,8 @@ async def start_command(message: types.Message):
         "دستورات:\n"
         "📰 `/news` — ۵ خبر آخر\n"
         "📢 `/send` — ارسال به کانال\n"
-        "🔄 `/update` — اسکرپ و ترجمه جدید\n"
+        "🔄 `/update` — اسکرپ خبرهای جدید\n"
+        "🧹 `/reset` — پاک کردن حافظه تکراری\n"
         "ℹ️ `/help` — راهنما",
         parse_mode="Markdown"
     )
@@ -328,7 +385,8 @@ async def help_command(message: types.Message):
         "*دستورات:*\n"
         "• `/news` — ۵ خبر آخر\n"
         "• `/send` — ارسال فوری به کانال\n"
-        "• `/update` — اسکرپ و ترجمه جدید (۲-۳ دقیقه)\n"
+        "• `/update` — اسکرپ خبرهای جدید (۲-۳ دقیقه)\n"
+        "• `/reset` — پاک کردن حافظه (برای تست)\n"
         "• `/start` — شروع",
         parse_mode="Markdown"
     )
@@ -360,7 +418,7 @@ async def news_command(message: types.Message):
             )
             await asyncio.sleep(1)
         except Exception as e:
-            print(f"❌ خطا: {e}")
+            logger.error(f"❌ خطا: {e}")
 
 
 @dp.message(Command("send"))
@@ -380,13 +438,30 @@ async def update_command(message: types.Message):
         await message.answer("❌ شما اجازه‌ی این کار رو ندارید.")
         return
     
-    await message.answer("🔄 در حال اسکرپ و ترجمه... (۲-۳ دقیقه)")
-    success = await scrape_and_translate()
+    await message.answer("🔄 در حال اسکرپ خبرهای جدید... (۲-۳ دقیقه)")
+    count = await scrape_and_translate()
     
-    if success:
-        await message.answer("✅ اخبار به‌روزرسانی شد!")
+    if count > 0:
+        await message.answer(f"✅ {count} خبر جدید پیدا شد!")
     else:
-        await message.answer("❌ هیچ خبری پیدا نشد.")
+        await message.answer("⚠️ خبر جدیدی پیدا نشد (همه تکراری بودن).")
+
+
+@dp.message(Command("reset"))
+async def reset_command(message: types.Message):
+    if message.from_user.id != MY_USER_ID:
+        await message.answer("❌ شما اجازه‌ی این کار رو ندارید.")
+        return
+    
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM seen_urls")
+        conn.commit()
+        conn.close()
+        await message.answer("🧹 حافظه پاک شد. /update رو بزن.")
+    except Exception as e:
+        await message.answer(f"❌ خطا: {e}")
 
 
 @dp.message()
@@ -403,7 +478,7 @@ async def webhook_handler(request: Request):
         update = Update.model_validate(update_data, context={"bot": bot})
         await dp.feed_update(bot, update)
     except Exception as e:
-        print(f"❌ خطا در Webhook: {e}")
+        logger.error(f"❌ خطا در Webhook: {e}")
     return {"ok": True}
 
 
@@ -419,12 +494,14 @@ async def startup():
     if WEBHOOK_URL:
         full_url = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
         await bot.set_webhook(full_url)
-        print(f"✅ Webhook ست شد: {full_url}")
+        logger.info(f"✅ Webhook ست شد: {full_url}")
+    
+    init_db()
     
     scheduler = AsyncIOScheduler()
     scheduler.add_job(daily_job, "cron", hour=8, minute=0)
     scheduler.start()
-    print("⏰ زمان‌بندی: هر روز ساعت ۸:۰۰")
+    logger.info("⏰ زمان‌بندی: هر روز ساعت ۸:۰۰")
 
 
 if __name__ == "__main__":
