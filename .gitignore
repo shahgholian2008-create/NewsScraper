@@ -7,9 +7,6 @@ __pycache__/
 config.json
 .env
 
-# Excel outputs
-#*.xlsx
-
 # IDE
 .vscode/
 .idea/

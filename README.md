@@ -1,52 +1,115 @@
 # 📰 NewsScraper — ربات خبری هوشمند
 
-پروژه‌ای برای استخراج، فیلتر و ترجمه‌ی اخبار از منابع معتبر بین‌المللی.
+پروژه‌ای برای استخراج، فیلتر، ترجمه و ارسال خودکار اخبار از منابع معتبر بین‌المللی.
+
+---
 
 ## ✨ قابلیت‌ها
 
-- 📡 استخراج از ۳ منبع معتبر (BBC World, BBC Middle East, Al Jazeera)
-- 🔍 فیلتر دقیق (فقط اخبار درگیری ایران و آمریکا)
-- 🌐 ترجمه‌ی خودکار به فارسی (با Groq API)
-- 📊 ذخیره در Excel (دو زبانه)
-- 🔒 دور زدن تحریم با Render Proxy
+| قابلیت | توضیح |
+|--------|-------|
+| 📡 ۶ منبع RSS | BBC World, BBC Middle East, Al Jazeera, DW, France24, NYT |
+| 🔍 فیلتر هوشمند | ایران-آمریکا + نفت + طلا |
+| 🕐 فیلتر تاریخ | فقط اخبار ۴۸ ساعت اخیر |
+| 🆕 جلوگیری از تکراری | دیتابیس SQLite |
+| 🌐 ترجمه با Groq | ترجمه‌ی عنوان به فارسی |
+| 📱 ربات تلگرام | با Webhook |
+| ⏰ زمان‌بندی | هر ۲ ساعت خودکار |
+| 🔒 دور زدن تحریم | Render Proxy |
+
+---
 
 ## 🛠 تکنولوژی‌ها
 
-- Python 3.x
-- feedparser (RSS)
-- pandas, openpyxl (Excel)
-- requests (HTTP)
-- Groq API (ترجمه)
-- Render Proxy (دور زدن تحریم)
+- Python 3.10+
+- feedparser — خواندن RSS
+- aiogram 3.x — ربات تلگرام
+- FastAPI — وب‌سرور Webhook
+- APScheduler — زمان‌بندی
+- Groq API — ترجمه
+- SQLite — دیتابیس
+- Render — هاست
+
+---
 
 ## 📁 ساختار پروژه
 
 NewsScraper/
-├── english_news_scraper.py       # فایل اصلی
-├── config.json                   # تنظیمات (در .gitignore)
-├── requirements.txt
-├── README.md
+├── news_channel_bot.py          # فایل اصلی
+├── english_news_scraper.py      # اسکرپر مستقل
+├── config.json                  # تنظیمات (در .gitignore)
+├── config.example.json          # نمونه
+├── requirements.txt             # کتابخانه‌ها
+├── README.md                    # این فایل
 ├── .gitignore
-└── iran_us_news_translated.xlsx  # خروجی
+└── iran_us_news_translated.xlsx # نمونه خروجی
+
+---
 
 ## 🚀 نصب و اجرا
 
 ### ۱. نصب کتابخانه‌ها
-pip install feedparser pandas openpyxl requests
+
+pip install -r requirements.txt
 
 ### ۲. ساخت فایل config.json
+
 {
-  "gemini_api_key": "YOUR_KEY",
-  "groq_api_key": "YOUR_KEY"
+  "telegram_token": "YOUR_TELEGRAM_BOT_TOKEN",
+  "channel_id": "YOUR_CHANNEL_ID",
+  "my_user_id": "YOUR_USER_ID",
+  "groq_api_key": "YOUR_GROQ_API_KEY"
 }
 
 ### ۳. اجرا
-python english_news_scraper.py
+
+python news_channel_bot.py
+
+---
 
 ## 🌐 معماری
 
-RSS (BBC, Al Jazeera) → کامپیوتر تو (ایران) → Render Proxy (IP تمیز) → Groq API → Excel
+RSS (BBC, Al Jazeera, ...)
+    ↓
+فیلتر (ایران-آمریکا + نفت + طلا)
+    ↓
+Render Proxy → Groq API (ترجمه)
+    ↓
+SQLite → ذخیره اخبار
+    ↓
+ربات تلگرام → ارسال به کانال
+
+---
+
+## 🔐 امنیت
+
+- توکن‌ها در config.json (در .gitignore)
+- روی Render از Environment Variables
+- config.example.json برای نمونه
+
+---
+
+## 📊 منابع خبری
+
+| منبع | دسته |
+|------|------|
+| BBC World | عمومی |
+| BBC Middle East | خاورمیانه |
+| Al Jazeera | خاورمیانه |
+| DW English | جهانی |
+| France24 | جهانی |
+| NYT World | جهانی |
+
+---
 
 ## 📝 مجوز
 
 این پروژه برای اهداف آموزشی و شخصی توسعه یافته است.
+
+---
+
+## 👩‍💻 توسعه‌دهنده
+
+KtMir — در حال یادگیری پایتون و فریلنسری
+
+GitHub: @shahgholian2008-create
